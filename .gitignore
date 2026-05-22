@@ -1,0 +1,17 @@
+# Binaries (local dev builds)
+/clipd
+/clip
+
+# Release artifacts
+/dist/
+
+# SQLite (local dev)
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+daemon.log
+
+# macOS
+.DS_Store
