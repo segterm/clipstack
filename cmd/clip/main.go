@@ -35,16 +35,10 @@ var (
 	styleSelected = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(highlight).
-			PaddingLeft(1)
+			Background(highlight)
 
 	styleNormal = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#1A1A1A", Dark: "#DDDDDD"}).
-			PaddingLeft(1)
-
-	stylePinned = lipgloss.NewStyle().
-			Foreground(special).
-			PaddingLeft(1)
+			Foreground(lipgloss.AdaptiveColor{Light: "#1A1A1A", Dark: "#DDDDDD"})
 
 	styleDim = lipgloss.NewStyle().
 			Foreground(subtle)
@@ -69,6 +63,16 @@ var (
 
 	styleErr = lipgloss.NewStyle().
 			Foreground(danger)
+
+	styleNote = lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#AAAAAA"}).
+			Italic(true)
+
+	styleHidden = lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+
+	styleGold = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFD700"))
 )
 
 // ── Client (thread-safe connection to daemon) ─────────────────────────────────
@@ -118,6 +122,7 @@ const (
 	modeList mode = iota
 	modeSearch
 	modePreview
+	modeNote
 )
 
 // ── Messages ──────────────────────────────────────────────────────────────────
@@ -125,6 +130,7 @@ const (
 type itemsMsg struct{ items []proto.Item }
 type errMsg struct{ err error }
 type statusMsg struct{ text string }
+type clearStatusMsg struct{}
 type tickMsg struct{}
 
 func tickCmd() tea.Cmd {
@@ -144,6 +150,8 @@ var cyrillicToLatin = map[rune]rune{
 	'м': 'v', 'М': 'V',
 	'з': 'p', 'З': 'P',
 	'в': 'd', 'В': 'D',
+	'н': 'n', 'Н': 'N',
+	'р': 'h', 'Р': 'H',
 }
 
 func normalizeKey(msg tea.KeyMsg) string {
@@ -158,16 +166,17 @@ func normalizeKey(msg tea.KeyMsg) string {
 // ── Model ─────────────────────────────────────────────────────────────────────
 
 type model struct {
-	cli    *client
-	items  []proto.Item
-	cursor int
-	mode   mode
-	search textinput.Model
-	status string
-	isErr  bool
-	width  int
-	height int
-	tab    int
+	cli       *client
+	items     []proto.Item
+	cursor    int
+	mode      mode
+	search    textinput.Model
+	noteInput textinput.Model
+	status    string
+	isErr     bool
+	width     int
+	height    int
+	tab       int
 }
 
 func initialModel() (model, error) {
@@ -180,9 +189,14 @@ func initialModel() (model, error) {
 	ti.Placeholder = "Search..."
 	ti.CharLimit = 256
 
+	ni := textinput.New()
+	ni.Placeholder = "Add a note..."
+	ni.CharLimit = 512
+
 	return model{
-		cli:    &client{conn: conn, reader: bufio.NewReader(conn)},
-		search: ti,
+		cli:       &client{conn: conn, reader: bufio.NewReader(conn)},
+		search:    ti,
+		noteInput: ni,
 	}, nil
 }
 
@@ -214,6 +228,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status = msg.text
 		m.isErr = false
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearStatusMsg{} })
+
+	case clearStatusMsg:
+		m.status = ""
+		m.isErr = false
 		return m, nil
 
 	case tickMsg:
@@ -238,6 +257,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSearch(msg)
 		case modePreview:
 			return m.updatePreview(msg)
+		case modeNote:
+			return m.updateNote(msg)
 		}
 	}
 	return m, nil
@@ -307,6 +328,25 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.items) > 0 {
 			m.mode = modePreview
 		}
+
+	case "n", "N":
+		if len(m.items) > 0 {
+			m.mode = modeNote
+			m.noteInput.SetValue(m.items[m.cursor].Note)
+			m.noteInput.CursorEnd()
+			m.noteInput.Focus()
+			return m, textinput.Blink
+		}
+
+	case "h", "H":
+		if len(m.items) == 0 {
+			return m, nil
+		}
+		item := m.items[m.cursor]
+		if item.Hidden {
+			return m, sendUnhide(m.cli, item.ID)
+		}
+		return m, sendHide(m.cli, item.ID)
 	}
 	return m, nil
 }
@@ -354,8 +394,41 @@ func (m model) updatePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.items) > 0 {
 			return m, sendCopy(m.cli, m.items[m.cursor].ID)
 		}
+
+	case "n", "N":
+		if len(m.items) > 0 {
+			m.mode = modeNote
+			m.noteInput.SetValue(m.items[m.cursor].Note)
+			m.noteInput.CursorEnd()
+			m.noteInput.Focus()
+			return m, textinput.Blink
+		}
 	}
 	return m, nil
+}
+
+func (m model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyCtrlC:
+		m.mode = modeList
+		m.noteInput.Blur()
+		return m, nil
+	case tea.KeyEnter:
+		if len(m.items) == 0 {
+			m.mode = modeList
+			m.noteInput.Blur()
+			return m, nil
+		}
+		id := m.items[m.cursor].ID
+		note := strings.TrimSpace(m.noteInput.Value())
+		m.mode = modeList
+		m.noteInput.Blur()
+		return m, sendNote(m.cli, id, note)
+	default:
+		var cmd tea.Cmd
+		m.noteInput, cmd = m.noteInput.Update(msg)
+		return m, cmd
+	}
 }
 
 // ── View ──────────────────────────────────────────────────────────────────────
@@ -372,7 +445,7 @@ func (m model) viewList() string {
 
 	// Tab bar
 	tab0 := "  All  "
-	tab1 := "  ★ Pinned  "
+	tab1 := "  ○ Pinned  "
 	if m.tab == 0 {
 		b.WriteString(styleHeader.Render(tab0))
 		b.WriteString(styleDim.Render(tab1))
@@ -382,7 +455,8 @@ func (m model) viewList() string {
 	}
 	b.WriteString("\n\n")
 
-	listHeight := m.height - 6
+	// listHeight: total height minus fixed chrome (7 lines: 2 tab + 1 sep + 1 note + 1 status + 2 help)
+	listHeight := m.height - 7
 	if m.mode == modeSearch {
 		listHeight -= 4
 		box := styleBorder.Width(m.width - 4).Render(m.search.View())
@@ -398,23 +472,67 @@ func (m model) viewList() string {
 		b.WriteString(styleDim.Render("  (empty)"))
 		b.WriteString("\n")
 	} else {
+		// contentWidth leaves 2 chars for "│ " prefix
+		contentWidth := m.width - 2
 		start, end := visibleWindow(m.cursor, len(m.items), listHeight)
 		for i := start; i < end; i++ {
 			item := m.items[i]
-			line := formatLine(item, m.width)
+			body, ts := formatLine(item, contentWidth)
+			runes := []rune(body)
+			circle := string(runes[:1])
+			rest := string(runes[1:])
+
+			var barRendered, tsRendered string
 			if i == m.cursor {
-				b.WriteString(styleSelected.Width(m.width).Render(line))
-			} else if item.Pinned {
-				b.WriteString(stylePinned.Render(line))
+				barRendered = lipgloss.NewStyle().Foreground(highlight).Render("│")
+				tsRendered = lipgloss.NewStyle().Foreground(highlight).Render(ts)
 			} else {
-				b.WriteString(styleNormal.Render(line))
+				barRendered = styleDim.Render("│")
+				tsRendered = styleDim.Render(ts)
 			}
-			b.WriteString("\n")
+
+			var circleRendered string
+			if item.Pinned {
+				circleRendered = styleGold.Render(circle)
+			} else {
+				circleRendered = styleDim.Render(circle)
+			}
+
+			var restRendered string
+			if item.Hidden {
+				restRendered = styleHidden.Render(rest)
+			} else {
+				restRendered = styleNormal.Render(rest)
+			}
+
+			b.WriteString(barRendered + " " + circleRendered + restRendered + tsRendered + "\n")
 		}
 	}
 
+	// Note panel — always 1 line, never scrolls
+	b.WriteString(styleDim.Render(strings.Repeat("─", m.width)) + "\n")
+	if m.mode == modeNote && len(m.items) > 0 {
+		b.WriteString(styleDim.Render("  Note:") + " " + m.noteInput.View() + "\n")
+	} else if len(m.items) > 0 {
+		item := m.items[m.cursor]
+		if item.Hidden {
+			b.WriteString(styleDim.Render("  Content is hidden · press v to preview") + "\n")
+		} else if item.Note != "" {
+			note := item.Note
+			maxW := m.width - 10
+			if utf8.RuneCountInString(note) > maxW {
+				runes := []rune(note)
+				note = string(runes[:maxW-1]) + "…"
+			}
+			b.WriteString(styleDim.Render("  Note: ") + styleNote.Render(note) + "\n")
+		} else {
+			b.WriteString("\n")
+		}
+	} else {
+		b.WriteString("\n")
+	}
+
 	// Status
-	b.WriteString("\n")
 	if m.status != "" {
 		if m.isErr {
 			b.WriteString(styleErr.Render(m.status))
@@ -424,8 +542,13 @@ func (m model) viewList() string {
 	}
 	b.WriteString("\n")
 
-	// Help
-	help := "j/k navigate  enter copy  p pin  d delete  v preview  / search  tab switch  q quit"
+	// Help (contextual)
+	var help string
+	if m.mode == modeNote {
+		help = "enter save  esc cancel"
+	} else {
+		help = "j/k navigate  enter copy  n note  h hide  p pin  d delete  v preview  / search  tab switch  q quit"
+	}
 	b.WriteString(styleHelp.Render(help))
 
 	return b.String()
@@ -441,6 +564,9 @@ func (m model) viewPreview() string {
 	header := fmt.Sprintf("Preview #%d", item.ID)
 	if item.Pinned {
 		header += " ★"
+	}
+	if item.Hidden {
+		header += " ✎"
 	}
 	header += " — " + t.Local().Format("Jan 2 15:04")
 
@@ -479,41 +605,60 @@ func (m model) viewPreview() string {
 	b.WriteString(styleHeader.Render(header))
 	b.WriteString("\n\n")
 	b.WriteString(box)
-	b.WriteString("\n\n")
-	b.WriteString(styleHelp.Render("esc/v close  enter/space copy  q quit"))
+	b.WriteString("\n")
+	if item.Note != "" {
+		b.WriteString(styleNote.Render("✎ " + item.Note))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(styleHelp.Render("esc/v close  n note  enter/space copy  q quit"))
 	return b.String()
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-func formatLine(item proto.Item, width int) string {
-	pin := "  "
-	if item.Pinned {
-		pin = "★ "
+func formatLine(item proto.Item, width int) (body, ts string) {
+	var circle string
+	if item.Note != "" {
+		circle = "●"
+	} else {
+		circle = "○"
 	}
+	const indicatorWidth = 2 // circle + space
 
-	ts := formatTime(item.CreatedAt)
+	ts = formatTime(item.CreatedAt)
 	tsWidth := utf8.RuneCountInString(ts) + 2
 
-	content := item.Content
-	content = strings.ReplaceAll(content, "\n", "↵ ")
-	content = strings.ReplaceAll(content, "\t", "→")
-
-	available := width - len(pin) - tsWidth - 2
+	available := width - indicatorWidth - tsWidth - 1
 	if available < 1 {
 		available = 1
 	}
+
+	var content string
+	if item.Hidden {
+		if item.Note != "" {
+			content = item.Note
+		} else {
+			content = "•••"
+		}
+	} else {
+		content = item.Content
+		content = strings.ReplaceAll(content, "\n", "↵ ")
+		content = strings.ReplaceAll(content, "\t", "→")
+	}
+
 	if utf8.RuneCountInString(content) > available {
 		runes := []rune(content)
 		content = string(runes[:available-1]) + "…"
 	}
 
-	pad := width - len(pin) - utf8.RuneCountInString(content) - tsWidth
+	pad := width - indicatorWidth - utf8.RuneCountInString(content) - tsWidth
 	if pad < 1 {
 		pad = 1
 	}
 
-	return pin + content + strings.Repeat(" ", pad) + styleDim.Render(ts)
+	body = circle + " " + content + strings.Repeat(" ", pad)
+	return body, ts
 }
 
 func formatTime(raw string) string {
@@ -630,6 +775,45 @@ func sendPin(c *client, id int64) tea.Cmd {
 func sendUnpin(c *client, id int64) tea.Cmd {
 	return func() tea.Msg {
 		if _, err := c.send(proto.Request{Type: proto.MsgUnpin, ID: id}); err != nil {
+			return errMsg{err}
+		}
+		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
+		if err != nil {
+			return errMsg{err}
+		}
+		return itemsMsg{items}
+	}
+}
+
+func sendHide(c *client, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := c.send(proto.Request{Type: proto.MsgHide, ID: id}); err != nil {
+			return errMsg{err}
+		}
+		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
+		if err != nil {
+			return errMsg{err}
+		}
+		return itemsMsg{items}
+	}
+}
+
+func sendUnhide(c *client, id int64) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := c.send(proto.Request{Type: proto.MsgUnhide, ID: id}); err != nil {
+			return errMsg{err}
+		}
+		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
+		if err != nil {
+			return errMsg{err}
+		}
+		return itemsMsg{items}
+	}
+}
+
+func sendNote(c *client, id int64, note string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := c.send(proto.Request{Type: proto.MsgNote, ID: id, Note: note}); err != nil {
 			return errMsg{err}
 		}
 		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})

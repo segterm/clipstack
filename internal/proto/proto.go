@@ -11,6 +11,9 @@ const (
 	MsgUnpin  MsgType = "unpin"
 	MsgDelete MsgType = "delete"
 	MsgCopy   MsgType = "copy"
+	MsgNote   MsgType = "note"
+	MsgHide   MsgType = "hide"
+	MsgUnhide MsgType = "unhide"
 	MsgResp   MsgType = "resp"
 	MsgErr    MsgType = "err"
 )
@@ -19,6 +22,7 @@ type Request struct {
 	Type   MsgType `json:"type"`
 	ID     int64   `json:"id,omitempty"`
 	Query  string  `json:"query,omitempty"`
+	Note   string  `json:"note,omitempty"`
 	Pinned bool    `json:"pinned,omitempty"`
 	Limit  int     `json:"limit,omitempty"`
 	Offset int     `json:"offset,omitempty"`
@@ -27,7 +31,9 @@ type Request struct {
 type Item struct {
 	ID        int64  `json:"id"`
 	Content   string `json:"content"`
+	Note      string `json:"note,omitempty"`
 	Pinned    bool   `json:"pinned"`
+	Hidden    bool   `json:"hidden,omitempty"`
 	CreatedAt string `json:"created_at"`
 }
 

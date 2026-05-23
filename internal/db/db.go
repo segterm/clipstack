@@ -54,10 +54,24 @@ func (d *DB) Close() {
 func (d *DB) migrate() error {
 	var version int
 	d.db.QueryRow("PRAGMA user_version").Scan(&version)
-	if version >= 1 {
-		return nil
+	if version < 1 {
+		if err := d.migrateV1(); err != nil {
+			return err
+		}
+		version = 1
 	}
-	return d.migrateV1()
+	if version < 2 {
+		return d.migrateV2()
+	}
+	return nil
+}
+
+func (d *DB) migrateV2() error {
+	if _, err := d.db.Exec(`ALTER TABLE clips ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	_, err := d.db.Exec(`PRAGMA user_version = 2`)
+	return err
 }
 
 // migrateV1 переходит на 3НФ-схему с отдельной таблицей content.
@@ -178,10 +192,12 @@ func scanItems(rows *sql.Rows) ([]proto.Item, error) {
 	for rows.Next() {
 		var it proto.Item
 		var pinned int
-		if err := rows.Scan(&it.ID, &it.Content, &pinned, &it.CreatedAt); err != nil {
+		var hidden int
+		if err := rows.Scan(&it.ID, &it.Content, &pinned, &it.CreatedAt, &it.Note, &hidden); err != nil {
 			return nil, err
 		}
 		it.Pinned = pinned != 0
+		it.Hidden = hidden != 0
 		items = append(items, it)
 	}
 	return items, rows.Err()
@@ -215,7 +231,7 @@ func (d *DB) Insert(content string) error {
 
 func (d *DB) List(limit, offset int) ([]proto.Item, error) {
 	rows, err := d.db.Query(`
-		SELECT c.id, ct.text, c.pinned, c.updated_at
+		SELECT c.id, ct.text, c.pinned, c.updated_at, COALESCE(c.note, ''), c.hidden
 		FROM clips c JOIN content ct ON c.content_hash = ct.hash
 		ORDER BY c.pinned DESC, c.updated_at DESC
 		LIMIT ? OFFSET ?`,
@@ -229,7 +245,7 @@ func (d *DB) List(limit, offset int) ([]proto.Item, error) {
 
 func (d *DB) Search(query string, limit, offset int) ([]proto.Item, error) {
 	rows, err := d.db.Query(`
-		SELECT c.id, ct.text, c.pinned, c.updated_at
+		SELECT c.id, ct.text, c.pinned, c.updated_at, COALESCE(c.note, ''), c.hidden
 		FROM clips c JOIN content ct ON c.content_hash = ct.hash
 		WHERE LOWER(ct.text) LIKE '%' || LOWER(?) || '%'
 		ORDER BY c.pinned DESC, c.updated_at DESC
@@ -253,6 +269,20 @@ func (d *DB) SetPinned(id int64, pinned bool) error {
 
 func (d *DB) Delete(id int64) error {
 	_, err := d.db.Exec(`DELETE FROM clips WHERE id = ?`, id)
+	return err
+}
+
+func (d *DB) SetNote(id int64, note string) error {
+	_, err := d.db.Exec(`UPDATE clips SET note = ? WHERE id = ?`, note, id)
+	return err
+}
+
+func (d *DB) SetHidden(id int64, hidden bool) error {
+	v := 0
+	if hidden {
+		v = 1
+	}
+	_, err := d.db.Exec(`UPDATE clips SET hidden = ? WHERE id = ?`, v, id)
 	return err
 }
 

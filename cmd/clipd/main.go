@@ -162,6 +162,27 @@ func handleConn(conn net.Conn, database *db.DB) {
 				sendResp(conn, nil)
 			}
 
+		case proto.MsgNote:
+			if err := database.SetNote(req.ID, req.Note); err != nil {
+				sendErr(conn, err.Error())
+			} else {
+				sendResp(conn, nil)
+			}
+
+		case proto.MsgHide:
+			if err := database.SetHidden(req.ID, true); err != nil {
+				sendErr(conn, err.Error())
+			} else {
+				sendResp(conn, nil)
+			}
+
+		case proto.MsgUnhide:
+			if err := database.SetHidden(req.ID, false); err != nil {
+				sendErr(conn, err.Error())
+			} else {
+				sendResp(conn, nil)
+			}
+
 		case proto.MsgCopy:
 			content, err := database.GetContent(req.ID)
 			if err != nil {
