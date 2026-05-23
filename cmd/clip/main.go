@@ -210,9 +210,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case itemsMsg:
+		var selectedID int64
+		oldCursor := m.cursor
+		if len(m.items) > 0 {
+			selectedID = m.items[m.cursor].ID
+		}
 		m.items = msg.items
-		if m.cursor >= len(m.items) {
-			m.cursor = max(0, len(m.items)-1)
+		m.cursor = min(oldCursor, max(0, len(m.items)-1))
+		for i, it := range m.items {
+			if it.ID == selectedID {
+				m.cursor = i
+				break
+			}
 		}
 		return m, nil
 
