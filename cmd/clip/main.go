@@ -54,7 +54,7 @@ var (
 
 	stylePreviewBorder = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
-				BorderForeground(special).
+				BorderForeground(highlight).
 				Padding(0, 1)
 
 	styleStatus = lipgloss.NewStyle().
@@ -170,6 +170,7 @@ type model struct {
 	items     []proto.Item
 	cursor    int
 	mode      mode
+	prevMode  mode
 	search    textinput.Model
 	noteInput textinput.Model
 	status    string
@@ -331,6 +332,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "n", "N":
 		if len(m.items) > 0 {
+			m.prevMode = modeList
 			m.mode = modeNote
 			m.noteInput.SetValue(m.items[m.cursor].Note)
 			m.noteInput.CursorEnd()
@@ -397,6 +399,7 @@ func (m model) updatePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "n", "N":
 		if len(m.items) > 0 {
+			m.prevMode = modePreview
 			m.mode = modeNote
 			m.noteInput.SetValue(m.items[m.cursor].Note)
 			m.noteInput.CursorEnd()
@@ -410,18 +413,18 @@ func (m model) updatePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
-		m.mode = modeList
+		m.mode = m.prevMode
 		m.noteInput.Blur()
 		return m, nil
 	case tea.KeyEnter:
 		if len(m.items) == 0 {
-			m.mode = modeList
+			m.mode = m.prevMode
 			m.noteInput.Blur()
 			return m, nil
 		}
 		id := m.items[m.cursor].ID
 		note := strings.TrimSpace(m.noteInput.Value())
-		m.mode = modeList
+		m.mode = m.prevMode
 		m.noteInput.Blur()
 		return m, sendNote(m.cli, id, note)
 	default:
@@ -434,7 +437,7 @@ func (m model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ── View ──────────────────────────────────────────────────────────────────────
 
 func (m model) View() string {
-	if m.mode == modePreview {
+	if m.mode == modePreview || (m.mode == modeNote && m.prevMode == modePreview) {
 		return m.viewPreview()
 	}
 	return m.viewList()
@@ -472,8 +475,10 @@ func (m model) viewList() string {
 		b.WriteString(styleDim.Render("  (empty)"))
 		b.WriteString("\n")
 	} else {
-		// contentWidth leaves 2 chars for "│ " prefix
-		contentWidth := m.width - 2
+		// numWidth: consistent column width for position numbers (e.g. 3 for 100-199 items)
+		numWidth := len(fmt.Sprintf("%d", len(m.items)))
+		// contentWidth: total minus "│ " prefix, number, space after number, and "○ " circle+space
+		contentWidth := m.width - 2 - numWidth - 1
 		start, end := visibleWindow(m.cursor, len(m.items), listHeight)
 		for i := start; i < end; i++ {
 			item := m.items[i]
@@ -482,12 +487,16 @@ func (m model) viewList() string {
 			circle := string(runes[:1])
 			rest := string(runes[1:])
 
-			var barRendered, tsRendered string
+			num := fmt.Sprintf("%*d", numWidth, i+1)
+
+			var barRendered, numRendered, tsRendered string
 			if i == m.cursor {
 				barRendered = lipgloss.NewStyle().Foreground(highlight).Render("│")
+				numRendered = lipgloss.NewStyle().Foreground(highlight).Render(num)
 				tsRendered = lipgloss.NewStyle().Foreground(highlight).Render(ts)
 			} else {
 				barRendered = styleDim.Render("│")
+				numRendered = styleDim.Render(num)
 				tsRendered = styleDim.Render(ts)
 			}
 
@@ -505,14 +514,14 @@ func (m model) viewList() string {
 				restRendered = styleNormal.Render(rest)
 			}
 
-			b.WriteString(barRendered + " " + circleRendered + restRendered + tsRendered + "\n")
+			b.WriteString(numRendered + " " + barRendered + " " + circleRendered + restRendered + tsRendered + "\n")
 		}
 	}
 
 	// Note panel — always 1 line, never scrolls
 	b.WriteString(styleDim.Render(strings.Repeat("─", m.width)) + "\n")
 	if m.mode == modeNote && len(m.items) > 0 {
-		b.WriteString(styleDim.Render("  Note:") + " " + m.noteInput.View() + "\n")
+		b.WriteString(styleDim.Render(fmt.Sprintf("  Note %d:", m.cursor+1)) + " " + m.noteInput.View() + "\n")
 	} else if len(m.items) > 0 {
 		item := m.items[m.cursor]
 		if item.Hidden {
@@ -561,12 +570,9 @@ func (m model) viewPreview() string {
 	item := m.items[m.cursor]
 
 	t, _ := time.Parse(time.RFC3339, item.CreatedAt)
-	header := fmt.Sprintf("Preview #%d", item.ID)
-	if item.Pinned {
-		header += " ★"
-	}
+	header := fmt.Sprintf("Preview %d", m.cursor+1)
 	if item.Hidden {
-		header += " ✎"
+		header += " · hidden"
 	}
 	header += " — " + t.Local().Format("Jan 2 15:04")
 
@@ -605,13 +611,20 @@ func (m model) viewPreview() string {
 	b.WriteString(styleHeader.Render(header))
 	b.WriteString("\n\n")
 	b.WriteString(box)
-	b.WriteString("\n")
-	if item.Note != "" {
-		b.WriteString(styleNote.Render("✎ " + item.Note))
+	b.WriteString("\n\n")
+	if m.mode == modeNote {
+		b.WriteString(styleDim.Render(fmt.Sprintf("  Note %d:", m.cursor+1)) + " " + m.noteInput.View() + "\n")
 		b.WriteString("\n")
+		b.WriteString(styleHelp.Render("enter save  esc cancel"))
+	} else {
+		if item.Note != "" {
+			b.WriteString(styleDim.Render("  Note: ") + styleNote.Render(item.Note) + "\n")
+		} else {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(styleHelp.Render("esc/v close  n note  enter/space copy  q quit"))
 	}
-	b.WriteString("\n")
-	b.WriteString(styleHelp.Render("esc/v close  n note  enter/space copy  q quit"))
 	return b.String()
 }
 
