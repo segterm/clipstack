@@ -23,8 +23,6 @@ import (
 var (
 	subtle    = lipgloss.AdaptiveColor{Light: "#D9DCCF", Dark: "#383838"}
 	highlight = lipgloss.AdaptiveColor{Light: "#874BFD", Dark: "#7D56F4"}
-	special   = lipgloss.AdaptiveColor{Light: "#43BF6D", Dark: "#73F59F"}
-	danger    = lipgloss.AdaptiveColor{Light: "#D7515A", Dark: "#FF6B6B"}
 
 	styleHeader = lipgloss.NewStyle().
 			Bold(true).
@@ -32,10 +30,7 @@ var (
 			Background(highlight).
 			Padding(0, 2)
 
-	styleSelected = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(highlight)
+	styleHighlight = lipgloss.NewStyle().Foreground(highlight)
 
 	styleNormal = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#1A1A1A", Dark: "#DDDDDD"})
@@ -52,27 +47,27 @@ var (
 			BorderForeground(highlight).
 			Padding(0, 1)
 
-	stylePreviewBorder = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(highlight).
-				Padding(0, 1)
-
 	styleStatus = lipgloss.NewStyle().
 			Italic(true).
-			Foreground(special)
+			Foreground(lipgloss.AdaptiveColor{Light: "#43BF6D", Dark: "#73F59F"})
 
 	styleErr = lipgloss.NewStyle().
-			Foreground(danger)
+			Foreground(lipgloss.AdaptiveColor{Light: "#D7515A", Dark: "#FF6B6B"})
 
 	styleNote = lipgloss.NewStyle().
 			Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#AAAAAA"}).
 			Italic(true)
 
 	styleHidden = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+			Foreground(lipgloss.Color("#888888"))
 
 	styleGold = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFD700"))
+
+	styleNoteBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(subtle).
+			Padding(0, 1)
 )
 
 // ── Client (thread-safe connection to daemon) ─────────────────────────────────
@@ -332,12 +327,7 @@ func (m model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "n", "N":
 		if len(m.items) > 0 {
-			m.prevMode = modeList
-			m.mode = modeNote
-			m.noteInput.SetValue(m.items[m.cursor].Note)
-			m.noteInput.CursorEnd()
-			m.noteInput.Focus()
-			return m, textinput.Blink
+			return m.openNote(modeList)
 		}
 
 	case "h", "H":
@@ -399,15 +389,19 @@ func (m model) updatePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "n", "N":
 		if len(m.items) > 0 {
-			m.prevMode = modePreview
-			m.mode = modeNote
-			m.noteInput.SetValue(m.items[m.cursor].Note)
-			m.noteInput.CursorEnd()
-			m.noteInput.Focus()
-			return m, textinput.Blink
+			return m.openNote(modePreview)
 		}
 	}
 	return m, nil
+}
+
+func (m model) openNote(prev mode) (tea.Model, tea.Cmd) {
+	m.prevMode = prev
+	m.mode = modeNote
+	m.noteInput.SetValue(m.items[m.cursor].Note)
+	m.noteInput.CursorEnd()
+	m.noteInput.Focus()
+	return m, textinput.Blink
 }
 
 func (m model) updateNote(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -444,6 +438,9 @@ func (m model) View() string {
 }
 
 func (m model) viewList() string {
+	if m.width < 4 || m.height < 4 {
+		return ""
+	}
 	var b strings.Builder
 
 	// Tab bar
@@ -458,27 +455,40 @@ func (m model) viewList() string {
 	}
 	b.WriteString("\n\n")
 
-	// listHeight: total height minus fixed chrome (7 lines: 2 tab + 1 sep + 1 note + 1 status + 2 help)
-	listHeight := m.height - 7
+	// 2(tabs) + 1(box-top) + listHeight + 1(box-bottom) + 1(blank) + 3(note-box) + 1(status) + 2(help) = 11
+	listHeight := m.height - 11
 	if m.mode == modeSearch {
 		listHeight -= 4
-		box := styleBorder.Width(m.width - 4).Render(m.search.View())
-		b.WriteString(box)
+		searchBox := styleBorder.Width(m.width - 2).Render(m.search.View())
+		b.WriteString(searchBox)
 		b.WriteString("\n\n")
 	}
 	if listHeight < 1 {
 		listHeight = 1
 	}
 
-	// Item list
+	// Pre-compute box chrome
+	borderL := styleHighlight.Render("│")
+	topBorder := styleHighlight.Render("╭" + strings.Repeat("─", m.width-2) + "╮")
+	botBorder := styleHighlight.Render("╰" + strings.Repeat("─", m.width-2) + "╯")
+	emptyInner := strings.Repeat(" ", max(m.width-2, 0))
+
+	b.WriteString(topBorder + "\n")
+
+	numWidth := len(fmt.Sprintf("%d", max(len(m.items), 1)))
+	// inner box = m.width-2; item = num(N)+" │ "(3)+body+ts; len(body+ts)=contentWidth-2 → contentWidth = m.width-N-3
+	contentWidth := m.width - numWidth - 3
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	drawn := 0
 	if len(m.items) == 0 {
-		b.WriteString(styleDim.Render("  (empty)"))
-		b.WriteString("\n")
+		const emptyText = "  (empty)"
+		pad := max(m.width-2-utf8.RuneCountInString(emptyText), 0)
+		b.WriteString(borderL + styleDim.Render(emptyText) + strings.Repeat(" ", pad) + borderL + "\n")
+		drawn = 1
 	} else {
-		// numWidth: consistent column width for position numbers (e.g. 3 for 100-199 items)
-		numWidth := len(fmt.Sprintf("%d", len(m.items)))
-		// contentWidth: total minus "│ " prefix, number, space after number, and "○ " circle+space
-		contentWidth := m.width - 2 - numWidth - 1
 		start, end := visibleWindow(m.cursor, len(m.items), listHeight)
 		for i := start; i < end; i++ {
 			item := m.items[i]
@@ -486,17 +496,16 @@ func (m model) viewList() string {
 			runes := []rune(body)
 			circle := string(runes[:1])
 			rest := string(runes[1:])
-
 			num := fmt.Sprintf("%*d", numWidth, i+1)
 
-			var barRendered, numRendered, tsRendered string
+			var numRendered, barRendered, tsRendered string
 			if i == m.cursor {
-				barRendered = lipgloss.NewStyle().Foreground(highlight).Render("│")
-				numRendered = lipgloss.NewStyle().Foreground(highlight).Render(num)
-				tsRendered = lipgloss.NewStyle().Foreground(highlight).Render(ts)
+				numRendered = styleHighlight.Render(num)
+				barRendered = styleHighlight.Render("│")
+				tsRendered = styleHighlight.Render(ts)
 			} else {
-				barRendered = styleDim.Render("│")
 				numRendered = styleDim.Render(num)
+				barRendered = styleDim.Render("│")
 				tsRendered = styleDim.Render(ts)
 			}
 
@@ -514,32 +523,19 @@ func (m model) viewList() string {
 				restRendered = styleNormal.Render(rest)
 			}
 
-			b.WriteString(numRendered + " " + barRendered + " " + circleRendered + restRendered + tsRendered + "\n")
+			b.WriteString(borderL + numRendered + " " + barRendered + " " + circleRendered + restRendered + tsRendered + borderL + "\n")
+			drawn++
 		}
+	}
+	for ; drawn < listHeight; drawn++ {
+		b.WriteString(borderL + emptyInner + borderL + "\n")
 	}
 
-	// Note panel — always 1 line, never scrolls
-	b.WriteString(styleDim.Render(strings.Repeat("─", m.width)) + "\n")
-	if m.mode == modeNote && len(m.items) > 0 {
-		b.WriteString(styleDim.Render(fmt.Sprintf("  Note %d:", m.cursor+1)) + " " + m.noteInput.View() + "\n")
-	} else if len(m.items) > 0 {
-		item := m.items[m.cursor]
-		if item.Hidden {
-			b.WriteString(styleDim.Render("  Content is hidden · press v to preview") + "\n")
-		} else if item.Note != "" {
-			note := item.Note
-			maxW := m.width - 10
-			if utf8.RuneCountInString(note) > maxW {
-				runes := []rune(note)
-				note = string(runes[:maxW-1]) + "…"
-			}
-			b.WriteString(styleDim.Render("  Note: ") + styleNote.Render(note) + "\n")
-		} else {
-			b.WriteString("\n")
-		}
-	} else {
-		b.WriteString("\n")
-	}
+	b.WriteString(botBorder + "\n")
+	b.WriteString("\n")
+
+	// Note box
+	b.WriteString(styleNoteBox.Width(m.width - 2).Render(m.noteContent()) + "\n")
 
 	// Status
 	if m.status != "" {
@@ -560,11 +556,11 @@ func (m model) viewList() string {
 	}
 	b.WriteString(styleHelp.Render(help))
 
-	return b.String()
+	return fitView(b.String(), m.height)
 }
 
 func (m model) viewPreview() string {
-	if len(m.items) == 0 {
+	if len(m.items) == 0 || m.width < 4 || m.height < 4 {
 		return ""
 	}
 	item := m.items[m.cursor]
@@ -581,17 +577,21 @@ func (m model) viewPreview() string {
 		boxWidth = 10
 	}
 
-	maxLines := m.height - 6
+	// 1(header) + 1(blank) + 1(box-top) + maxLines + 1(box-bottom) + 1(blank) + 1(note) + 1(blank) + 2(help) = 9
+	maxLines := m.height - 9
 	if maxLines < 1 {
 		maxLines = 1
 	}
 
 	lines := strings.Split(item.Content, "\n")
+	// Reserve 1 line for the truncation indicator when content doesn't fit
+	contentLimit := maxLines
+	if len(lines) > maxLines {
+		contentLimit = maxLines - 1
+	}
 	var rendered []string
-	truncated := false
 	for i, l := range lines {
-		if i >= maxLines {
-			truncated = true
+		if i >= contentLimit {
 			break
 		}
 		if utf8.RuneCountInString(l) > boxWidth {
@@ -600,12 +600,12 @@ func (m model) viewPreview() string {
 		}
 		rendered = append(rendered, l)
 	}
-	if truncated {
+	if len(lines) > maxLines {
 		rendered = append(rendered, "… (truncated)")
 	}
 
 	content := strings.Join(rendered, "\n")
-	box := stylePreviewBorder.Width(boxWidth).Render(content)
+	box := styleBorder.Width(m.width - 2).Render(content)
 
 	var b strings.Builder
 	b.WriteString(styleHeader.Render(header))
@@ -625,10 +625,50 @@ func (m model) viewPreview() string {
 		b.WriteString("\n")
 		b.WriteString(styleHelp.Render("esc/v close  n note  enter/space copy  q quit"))
 	}
-	return b.String()
+	return fitView(b.String(), m.height)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+func (m model) noteContent() string {
+	if m.mode == modeNote {
+		return styleDim.Render(fmt.Sprintf("Note %d:", m.cursor+1)) + " " + m.noteInput.View()
+	}
+	if len(m.items) > 0 {
+		item := m.items[m.cursor]
+		if item.Hidden {
+			return styleDim.Render("Content is hidden · press v to preview")
+		}
+		if item.Note != "" {
+			note := item.Note
+			maxW := m.width - 10
+			if maxW > 0 && utf8.RuneCountInString(note) > maxW {
+				runes := []rune(note)
+				note = string(runes[:maxW-1]) + "…"
+			}
+			return styleDim.Render("Note: ") + styleNote.Render(note)
+		}
+	}
+	return styleDim.Render("press n to add a note")
+}
+
+// fitView clamps the view to exactly height lines (truncates overflow, pads shortage).
+// Prevents terminal scroll that corrupts Bubble Tea's cursor tracking.
+func fitView(s string, height int) string {
+	if height <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	s = strings.Join(lines, "\n")
+	n := strings.Count(s, "\n")
+	if n < height-1 {
+		s += strings.Repeat("\n", height-1-n)
+	}
+	return s
+}
 
 func formatLine(item proto.Item, width int) (body, ts string) {
 	var circle string
@@ -712,13 +752,6 @@ func visibleWindow(cursor, total, height int) (start, end int) {
 	return start, end
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 func fetchList(c *client) tea.Cmd {
@@ -772,9 +805,10 @@ func sendCopy(c *client, id int64) tea.Cmd {
 	}
 }
 
-func sendPin(c *client, id int64) tea.Cmd {
+// sendAction sends req and refreshes the list on success.
+func sendAction(c *client, req proto.Request) tea.Cmd {
 	return func() tea.Msg {
-		if _, err := c.send(proto.Request{Type: proto.MsgPin, ID: id}); err != nil {
+		if _, err := c.send(req); err != nil {
 			return errMsg{err}
 		}
 		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
@@ -783,71 +817,30 @@ func sendPin(c *client, id int64) tea.Cmd {
 		}
 		return itemsMsg{items}
 	}
+}
+
+func sendPin(c *client, id int64) tea.Cmd {
+	return sendAction(c, proto.Request{Type: proto.MsgPin, ID: id})
 }
 
 func sendUnpin(c *client, id int64) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := c.send(proto.Request{Type: proto.MsgUnpin, ID: id}); err != nil {
-			return errMsg{err}
-		}
-		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
-		if err != nil {
-			return errMsg{err}
-		}
-		return itemsMsg{items}
-	}
+	return sendAction(c, proto.Request{Type: proto.MsgUnpin, ID: id})
 }
 
 func sendHide(c *client, id int64) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := c.send(proto.Request{Type: proto.MsgHide, ID: id}); err != nil {
-			return errMsg{err}
-		}
-		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
-		if err != nil {
-			return errMsg{err}
-		}
-		return itemsMsg{items}
-	}
+	return sendAction(c, proto.Request{Type: proto.MsgHide, ID: id})
 }
 
 func sendUnhide(c *client, id int64) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := c.send(proto.Request{Type: proto.MsgUnhide, ID: id}); err != nil {
-			return errMsg{err}
-		}
-		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
-		if err != nil {
-			return errMsg{err}
-		}
-		return itemsMsg{items}
-	}
+	return sendAction(c, proto.Request{Type: proto.MsgUnhide, ID: id})
 }
 
 func sendNote(c *client, id int64, note string) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := c.send(proto.Request{Type: proto.MsgNote, ID: id, Note: note}); err != nil {
-			return errMsg{err}
-		}
-		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
-		if err != nil {
-			return errMsg{err}
-		}
-		return itemsMsg{items}
-	}
+	return sendAction(c, proto.Request{Type: proto.MsgNote, ID: id, Note: note})
 }
 
 func sendDelete(c *client, id int64) tea.Cmd {
-	return func() tea.Msg {
-		if _, err := c.send(proto.Request{Type: proto.MsgDelete, ID: id}); err != nil {
-			return errMsg{err}
-		}
-		items, err := c.send(proto.Request{Type: proto.MsgList, Limit: 200})
-		if err != nil {
-			return errMsg{err}
-		}
-		return itemsMsg{items}
-	}
+	return sendAction(c, proto.Request{Type: proto.MsgDelete, ID: id})
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
