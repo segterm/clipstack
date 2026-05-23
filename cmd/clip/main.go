@@ -586,8 +586,8 @@ func (m model) viewPreview() string {
 		boxWidth = 10
 	}
 
-	// 1(header) + 1(blank) + 1(box-top) + maxLines + 1(box-bottom) + 1(blank) + 1(note) + 1(blank) + 2(help) = 9
-	maxLines := m.height - 9
+	// 1(header) + 1(blank) + 1(box-top) + maxLines + 1(box-bottom) + 1(blank) + 3(note-box) + 1(blank) + 2(help) = 11
+	maxLines := m.height - 11
 	if maxLines < 1 {
 		maxLines = 1
 	}
@@ -621,17 +621,11 @@ func (m model) viewPreview() string {
 	b.WriteString("\n\n")
 	b.WriteString(box)
 	b.WriteString("\n\n")
+	b.WriteString(styleNoteBox.Width(m.width - 2).Render(m.noteContent()) + "\n")
+	b.WriteString("\n")
 	if m.mode == modeNote {
-		b.WriteString(styleDim.Render(fmt.Sprintf("  Note %d:", m.cursor+1)) + " " + m.noteInput.View() + "\n")
-		b.WriteString("\n")
 		b.WriteString(styleHelp.Render("enter save  esc cancel"))
 	} else {
-		if item.Note != "" {
-			b.WriteString(styleDim.Render("  Note: ") + styleNote.Render(item.Note) + "\n")
-		} else {
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
 		b.WriteString(styleHelp.Render("esc/v close  n note  enter/space copy  q quit"))
 	}
 	return fitView(b.String(), m.height)
